@@ -14,8 +14,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the backend code
 COPY backend/ .
 
-# Expose the Hugging Face standard port
-EXPOSE 7860
-
-# Run Daphne ASGI server
-CMD ["daphne", "-b", "0.0.0.0", "-p", "7860", "core.asgi:application"]
+# Run Daphne ASGI server using the PORT environment variable (Render sets this automatically)
+CMD ["sh", "-c", "daphne -b 0.0.0.0 -p ${PORT:-8000} core.asgi:application"]
