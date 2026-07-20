@@ -86,8 +86,8 @@ class STTStreamConsumer(AsyncWebsocketConsumer):
         while self.is_connected:
             await asyncio.sleep(0.25)  # Wake up every 250ms for ULTRA FAST live updates
             
-            # Need at least 0.4s of audio to start making sense
-            if len(self.audio_buffer) < int(self.client_sample_rate * 0.4):
+            # Need at least 0.8s of audio before transcribing (reduces wasted CPU calls)
+            if len(self.audio_buffer) < int(self.client_sample_rate * 0.8):
                 continue
                 
             snapshot = list(self.audio_buffer)
@@ -131,10 +131,10 @@ class STTStreamConsumer(AsyncWebsocketConsumer):
                     None,
                     lambda: _STT_ENGINE.transcribe(
                         audio_data,
-                        beam_size=3,            # High accuracy for names
+                        beam_size=1,            # Fastest setting for slow CPU
                         language=self.input_lang_code, 
                         vad_filter=True,
-                        vad_parameters={"min_silence_duration_ms": 200},
+                        vad_parameters={"min_silence_duration_ms": 300},
                         condition_on_previous_text=False,
                         initial_prompt=prompt_context
                     ),
