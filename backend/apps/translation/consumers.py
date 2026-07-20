@@ -6,8 +6,8 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from faster_whisper import WhisperModel
 from deep_translator import GoogleTranslator
 
-print("[BOOT] Loading Whisper 'base' model...")
-_STT_ENGINE = WhisperModel("base", device="cpu", compute_type="int8")
+print("[BOOT] Loading Whisper 'tiny' model...")
+_STT_ENGINE = WhisperModel("tiny", device="cpu", compute_type="int8")
 print("[BOOT] Whisper model ready.")
 
 WHISPER_LANG_TO_ISO = {
