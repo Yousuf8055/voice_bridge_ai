@@ -40,10 +40,38 @@ export default function TacticalSpeechBoard() {
   const gainRef        = useRef(null);
   const streamRef      = useRef(null);
   const terminalEndRef = useRef(null);
+  const heartbeatRef   = useRef(null);
+  const keepAliveRef   = useRef(null);
+  const isRecordingRef = useRef(false);
 
   // ── WebSocket connection ───────────────────────────────────────────────────
 
+  function stopHeartbeat() {
+    if (heartbeatRef.current) { clearInterval(heartbeatRef.current); heartbeatRef.current = null; }
+    if (keepAliveRef.current) { clearInterval(keepAliveRef.current); keepAliveRef.current = null; }
+  }
+
+  function startHeartbeat(ws, input, target) {
+    stopHeartbeat();
+    // Ping the WebSocket every 25s to keep the connection and Render alive
+    heartbeatRef.current = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'PING' }));
+      }
+    }, 25000);
+
+    // Also ping the backend HTTP endpoint every 10 minutes to prevent Render sleeping
+    const backendBase = (import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws/stream-stt/')
+      .replace('wss://', 'https://')
+      .replace('ws://', 'http://')
+      .replace('/ws/stream-stt/', '/');
+    keepAliveRef.current = setInterval(() => {
+      fetch(backendBase, { mode: 'no-cors' }).catch(() => {});
+    }, 8 * 60 * 1000); // Every 8 minutes
+  }
+
   function connectWebSocket(input, target) {
+    stopHeartbeat();
     if (socketRef.current) {
       socketRef.current.onclose = null;
       socketRef.current.close();
@@ -59,14 +87,21 @@ export default function TacticalSpeechBoard() {
 
     ws.onopen = () => {
       setConnectionStatus('SECURE CONNECTED');
-      console.log('[WS] Connected, lang:', langCode);
+      startHeartbeat(ws, input, target);
+      console.log('[WS] Connected');
     };
     ws.onclose = (ev) => {
       setConnectionStatus('DISCONNECTED');
+      stopHeartbeat();
       console.warn('[WS] Closed:', ev.code, ev.reason);
+      // Auto-reconnect after 3 seconds if we were recording
+      if (isRecordingRef.current) {
+        setConnectionStatus('RECONNECTING...');
+        setTimeout(() => connectWebSocket(input, target), 3000);
+      }
     };
     ws.onerror = () => {
-      setConnectionStatus('ERROR');
+      setConnectionStatus('ERROR - Retrying...');
     };
     ws.onmessage = (event) => {
       try {
@@ -81,12 +116,10 @@ export default function TacticalSpeechBoard() {
             const updated = [...prev];
             const last = updated.length > 0 ? updated[updated.length - 1] : null;
 
-            // If the last paragraph exists, is NOT final, and language matches, we UPDATE it.
             if (last && !last.isFinal && last.langCode === lc) {
               last.text = payload.transcript;
               last.isFinal = isFinal;
             } else {
-              // Otherwise, we create a new paragraph
               updated.push({
                 langCode: lc,
                 langName: lname,
@@ -110,6 +143,7 @@ export default function TacticalSpeechBoard() {
   useEffect(() => {
     connectWebSocket(inputLanguage, targetLanguage);
     return () => {
+      stopHeartbeat();
       if (socketRef.current) {
         socketRef.current.onclose = null;
         socketRef.current.close();
@@ -157,12 +191,14 @@ export default function TacticalSpeechBoard() {
   // ── Recording start ────────────────────────────────────────────────────────
 
   async function startRecording() {
+    isRecordingRef.current = true;
     try {
       // Ensure socket is open
       if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
         connectWebSocket(inputLanguage, targetLanguage);
         await new Promise((resolve, reject) => {
-          const t = setTimeout(() => reject(new Error('WebSocket timeout')), 2000);
+          // Increased timeout to 8s to allow Render cold start
+          const t = setTimeout(() => reject(new Error('WebSocket timeout — backend may be waking up, please try again in 30 seconds')), 8000);
           const iv = setInterval(() => {
             if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
               clearTimeout(t); clearInterval(iv); resolve();
@@ -216,6 +252,7 @@ export default function TacticalSpeechBoard() {
   // ── Recording stop ─────────────────────────────────────────────────────────
 
   function stopRecording() {
+    isRecordingRef.current = false;
     try { processorRef.current?.disconnect(); } catch (_) {}
     try { gainRef.current?.disconnect(); } catch (_) {}
     try { audioCtxRef.current?.close(); } catch (_) {}
