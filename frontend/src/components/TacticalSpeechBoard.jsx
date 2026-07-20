@@ -35,10 +35,7 @@ export default function TacticalSpeechBoard() {
   const [targetLanguage, setTargetLanguage]     = useState('te');
 
   const socketRef      = useRef(null);
-  const audioCtxRef    = useRef(null);
-  const processorRef   = useRef(null);
-  const gainRef        = useRef(null);
-  const streamRef      = useRef(null);
+  const recognitionRef = useRef(null);
   const terminalEndRef = useRef(null);
   const heartbeatRef   = useRef(null);
   const keepAliveRef   = useRef(null);
@@ -207,45 +204,68 @@ export default function TacticalSpeechBoard() {
         });
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-        video: false,
-      });
-      streamRef.current = stream;
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        throw new Error("Your browser does not support the Web Speech API. Please use Google Chrome or Microsoft Edge.");
+      }
 
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      const ctx = new AudioCtx();
-      audioCtxRef.current = ctx;
-
-      // Send actual sample rate to backend for correct resampling
-      socketRef.current.send(JSON.stringify({ type: 'SAMPLE_RATE', rate: ctx.sampleRate }));
-
-      const source    = ctx.createMediaStreamSource(stream);
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      processorRef.current = processor;
-
-      processor.onaudioprocess = (e) => {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      
+      // Best-effort mapping for common Indian languages to Chrome locales
+      const langMap = { en: 'en-US', hi: 'hi-IN', te: 'te-IN', ta: 'ta-IN', kn: 'kn-IN', ml: 'ml-IN', bn: 'bn-IN', mr: 'mr-IN', gu: 'gu-IN', pa: 'pa-IN', ur: 'ur-IN' };
+      recognition.lang = langMap[inputLanguage] || inputLanguage;
+      
+      recognition.onresult = (event) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+        
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscript += event.results[i][0].transcript;
+          } else {
+            interimTranscript += event.results[i][0].transcript;
+          }
+        }
+        
         const ws = socketRef.current;
         if (ws && ws.readyState === WebSocket.OPEN) {
-          // .slice() makes an owned copy so the buffer isn't detached before send
-          const samples = e.inputBuffer.getChannelData(0).slice(0);
-          ws.send(samples.buffer);
+          if (finalTranscript) {
+             ws.send(JSON.stringify({ type: 'TRANSLATE', text: finalTranscript, isFinal: true, input: inputLanguage, target: targetLanguage }));
+          }
+          if (interimTranscript) {
+             ws.send(JSON.stringify({ type: 'TRANSLATE', text: interimTranscript, isFinal: false, input: inputLanguage, target: targetLanguage }));
+          }
         }
       };
 
-      // Silent gain: keeps ScriptProcessor alive without echo/feedback
-      const silentGain = ctx.createGain();
-      silentGain.gain.value = 0;
-      gainRef.current = silentGain;
+      recognition.onerror = (event) => {
+        console.error('[SPEECH RECOGNITION ERROR]', event.error);
+        if (event.error === 'not-allowed') {
+          setIsRecording(false);
+          isRecordingRef.current = false;
+          alert('Microphone access denied. Please allow microphone permissions in your browser.');
+        }
+      };
+      
+      recognition.onend = () => {
+         // Chrome stops recognition after a pause in speech. 
+         // If we are still supposed to be recording, automatically restart it.
+         if (isRecordingRef.current && recognitionRef.current) {
+            try { recognitionRef.current.start(); } catch(e) {}
+         }
+      };
 
-      source.connect(processor);
-      processor.connect(silentGain);
-      silentGain.connect(ctx.destination);
+      recognitionRef.current = recognition;
+      recognition.start();
 
       setIsRecording(true);
     } catch (err) {
       console.error('[AUDIO]', err);
       alert(`Microphone error: ${err.message}`);
+      setIsRecording(false);
+      isRecordingRef.current = false;
     }
   }
 
@@ -253,14 +273,8 @@ export default function TacticalSpeechBoard() {
 
   function stopRecording() {
     isRecordingRef.current = false;
-    try { processorRef.current?.disconnect(); } catch (_) {}
-    try { gainRef.current?.disconnect(); } catch (_) {}
-    try { audioCtxRef.current?.close(); } catch (_) {}
-    try { streamRef.current?.getTracks().forEach((t) => t.stop()); } catch (_) {}
-    processorRef.current = null;
-    gainRef.current      = null;
-    audioCtxRef.current  = null;
-    streamRef.current    = null;
+    try { recognitionRef.current?.stop(); } catch (_) {}
+    recognitionRef.current = null;
     setIsRecording(false);
   }
 
